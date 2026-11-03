@@ -1,0 +1,28 @@
+.venv/
+out/
+testdata/
+*.egg-info/
+.pytest_cache/
+__pycache__/
+*.pyc
+# audio / video / derived (synthetic fixtures are generated at test time)
+*.wav
+*.m4a
+*.mp3
+*.mp4
+*.flac
+*.ogg
+*.mid
+*.gp5
+*.musicxml
+*.alphatex
+*.pdf
+*brandon-song*
+audio2tab-inputs/
+# model weights and caches
+*.th
+*.pt
+*.onnx
+*.ckpt
+.cache/
+pretrained_models/

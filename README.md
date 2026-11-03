@@ -1,0 +1,65 @@
+## Setup from scratch
+
+Requirements: Linux or macOS, **Python 3.11**, and **ffmpeg** on PATH (`apt install ffmpeg` / `brew install ffmpeg`). CPU only, no GPU needed.
+
+```bash
+git clone https://github.com/wixregiga/audio2tab && cd audio2tab
+python3.11 -m venv .venv            # or: uv venv --python 3.11 .venv
+. .venv/bin/activate
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+pip install -e .                    # demucs, basic-pitch[onnx], librosa, mir_eval, pyguitarpro, music21, weasyprint, pytest
+pip uninstall -y tensorflow || true # basic-pitch must use its ONNX model (TF breaks with numpy 2)
+```
+
+Models download automatically on first run: Demucs `htdemucs_6s` weights (~55 MB) into the torch hub cache
+(`~/.cache/torch/hub`), and basic-pitch's ONNX model ships inside the pip package. Nothing is committed to this repo.
+WeasyPrint needs Pango system libraries for the PDF (`apt install libpango-1.0-0 libpangoft2-1.0-0`).
+
+Run: `./run.sh song.m4a --out out/song` (MP3, M4A, WAV, or MP4 video). Tests: `python -m pytest -q` (~35 s; synthetic
+audio, MP3/M4A/MP4 fixtures are generated with ffmpeg at test time).
+
+### Stem vs mix
+The guitar stem is used only when its RMS is at least 25% of the mix (`--source auto`). On the synthetic band mix,
+Demucs heavily attenuates the Karplus-Strong guitar (stem/mix RMS 0.04) and transcribing the stem scores worse
+(onset+pitch F1 0.48 vs 0.62 on the mix), so auto picks the mix. On real recordings with a prominent guitar the stem
+wins. Force with `--source stem|mix`.
+
+# audio2tab
+
+Turns an audio or video file (mp3, m4a, mp4, wav, flac, ogg, anything ffmpeg can read) into a guitar tab sheet.
+
+```
+./run.sh song.m4a                       # -> out/song/
+./run.sh song.mp3 --out /tmp/x --title "My Song"
+./run.sh solo.wav --no-separate          # clean solo guitar: skip source separation
+./run.sh song.mp4 --tuning DADGBE --capo 2 --start 30 --end 90 --bpm 120 --beats-per-bar 3
+```
+
+## Output (primary deliverable)
+`<name>.tab.txt`, `<name>.tab.html`, `<name>.tab.pdf`: a header block (Title, Tuning + confidence, Capo, Key, Tempo, Time signature), then a chord chart (fingerings, plus SVG diagrams in HTML/PDF), then the tab with bar numbers and chord names above each bar (6-line e|B|G|D|A|E, wrapped at about 80 chars).
+
+Extras: `.gp5` (Guitar Pro 5, TuxGuitar), `.musicxml` (TAB staff with string/fret, MuseScore), `.alphatex` (alphaTab/Songsterr-style viewers), `.mid`, `.guitar.wav` (the isolated stem), `.summary.md/.json` (key, tempo, chords per bar, confidence notes, timings).
+
+## Pipeline
+1. ffmpeg: first audio stream only (`-vn -map 0:a:0`, so video and cover art are ignored), 44.1 kHz stereo, EBU loudnorm.
+2. Demucs `htdemucs_6s` separation. Uses the guitar stem. If guitar RMS < 0.35 x `other`, it uses guitar+other (AI/synth mixes often put guitar in `other`).
+3. librosa beat tracking. The grid is interpolated between tracked beats, so tempo drift is handled. The meter (4/4 vs 3/4) comes from 3- vs 4-beat accent periodicity (full-band and low-band onset strength). The downbeat phase comes from accent weighting.
+4. Spotify basic-pitch (ONNX, polyphonic) for notes. Filters: onset 0.6, frame 0.4, min amplitude 0.3, min length 80 ms. Notes are quantized to 16ths.
+5. Tuning detection: the lowest confidently repeated pitch (Standard / Drop D / half-step down / D standard / Drop C# / Drop C), with pitch-class evidence for Drop D vs D standard. Reported with confidence. `--tuning` overrides it.
+6. Fretboard: Viterbi over every playable shape per onset (one note per string, fret span ≤ 4, frets ≤ 22). Cost covers position height, span, and hand movement (carried through open strings), with extra cost for jumps > 4 frets.
+7. Chords per bar: template match (maj, min, 7, 5) on duration-weighted pitch classes. Key: Krumhansl-Schmuckler. Voicings: a curated standard-tuning table, root/fifth/octave power chords, and a fretboard search for other tunings.
+
+## Tuning thresholds
+`--onset-threshold` / `--frame-threshold`: higher means fewer, surer notes. Lower them for quiet fingerpicking and raise them for dense distorted parts. `--min-amp` drops weak notes. `--min-note-ms` drops blips. `--subdivision 2` gives an 8th-note grid (cleaner for strummed songs). `--max-span` sets the allowed fret stretch. `--bpm` sets a tempo hint (use it if the tempo comes out double or half).
+
+## Tests
+`.venv/bin/python -m pytest -q` runs the unit tests (fretboard, formatter, theory) and end to end on a synthetic Karplus-Strong piece (accuracy gate, all outputs, MP4 input).
+`.venv/bin/python tests/eval_e2e.py all` prints mir_eval metrics for clean, mixed+separated, and mixed-unseparated runs.
+
+## Limitations
+- Rhythm is quantized to a 16th grid from tracked beats. Swing, triplets, rubato and pickups come out approximate, and the downbeat or time signature can be wrong (6/8 isn't detected yet).
+- No bend, slide, hammer-on or pull-off, vibrato, or palm-mute detection. Bends often show up as two adjacent pitches.
+- Dense strums lose inner notes, and octave errors are common. Heavy distortion adds false harmonics. Two guitars get merged into one part.
+- Chord names are one per bar (two chords in a bar shows the dominant one). Only maj/min/7/power templates are used.
+- Tuning detection only notices tunings lower than standard when low notes are actually played. A capo can't be detected.
+- Separation quality depends on the mix. On synthetic test mixes it did worse than no separation (see metrics). On real recordings Demucs is generally the better choice.
