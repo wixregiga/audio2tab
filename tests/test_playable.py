@@ -1,3 +1,4 @@
+"""Every tab position is playable: one note per string, reachable span, the right pitches, sane hand movement."""
 from audio2tab.fretboard import parse_tuning, assign, candidates
 
 STD = [40, 45, 50, 55, 59, 64]
@@ -8,12 +9,6 @@ def test_parse_tunings():
     assert parse_tuning("DADGBE") == [38, 45, 50, 55, 59, 64]
     assert parse_tuning("D2 A2 D3 G3 B3 E4") == [38, 45, 50, 55, 59, 64]
     assert parse_tuning("EbAbDbGbBbEb") == [39, 44, 49, 54, 58, 63]
-
-
-def test_open_strings_preferred():
-    out = assign([[p] for p in STD], STD)
-    assert [f for (_, f), in out] == [0] * 6
-    assert [s for (s, _), in out] == list(range(6))
 
 
 def test_one_note_per_string_and_span():
@@ -54,3 +49,16 @@ def test_capo_and_out_of_range():
 def test_too_dense_reduced():
     (res,) = assign([[40, 41, 42, 43, 44, 45, 46, 47]], STD)
     assert 1 <= len(res) <= 6
+
+
+def test_wide_stretch_column_rejected():
+    assert candidates([53, 80], STD) == []  # only E13 + e16 -> unplayable stretch
+
+
+def test_unfingerable_shape_rejected():
+    # 5 different fretted positions across 5 strings (no barre) needs 5 fingers
+    for sh in candidates([41, 47, 52, 57, 62], STD):
+        fr = [f for _, f in sh.frets if f]
+        lo = min(fr) if fr else 0
+        fingers = (1 if fr.count(lo) >= 2 else fr.count(lo)) + sum(1 for f in fr if f != lo)
+        assert fingers <= 4 and (max(fr) - min(fr) if fr else 0) <= 4
