@@ -1,8 +1,12 @@
 [project]
 name = "audio2tab"
 version = "0.1.0"
+license = "MIT"
+description = "Turn a song (MP3/M4A/MP4) into guitar tab with tuning, chords, key, tempo and time signature"
 requires-python = ">=3.10,<3.12"
-dependencies = ["basic-pitch[onnx]", "demucs>=4.1.0", "librosa>=0.11.0", "soundfile>=0.14.0", "mir_eval>=0.8.2", "pretty_midi>=0.2.11.post0", "PyGuitarPro>=0.11", "music21>=10.5.2", "weasyprint>=70.0", "pytest>=9.2.0", "numpy>=2.4.6", "scipy>=1.17.1"]
+dependencies = ["basic-pitch[onnx]", "demucs>=4.1.0", "librosa>=0.11.0", "soundfile>=0.14.0", "mir_eval>=0.8.2", "pretty_midi>=0.2.11.post0", "PyGuitarPro>=0.11", "music21>=10.5.2", "weasyprint>=70.0", "numpy>=2.4.6", "scipy>=1.17.1"]
+[project.optional-dependencies]
+test = ["pytest>=9.2.0"]
 [project.scripts]
 audio2tab = "audio2tab.cli:main"
 [tool.setuptools]
