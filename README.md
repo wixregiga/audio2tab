@@ -72,3 +72,12 @@ After basic-pitch and cleanup, each note is checked against the chosen source au
 - Trailing bars after the last note are trimmed, and a final bar shorter than the meter is written with its real length.
 - **Slash chords**: the lowest strong bass note per half bar (bass stem + guitar, restricted to scale tones to absorb semitone leakage) relabels a chord when the bass is a better root (C# -> A#m), or writes inversions as C#/F.
 - MusicXML: music21's `score.recurse().pitches` counts each pitch once per enclosing stream (3x). Use `score.flatten().pitches`, which matches the note count.
+
+## v4: chord model (BTC)
+
+Chord detection now uses BTC, the Bi-directional Transformer for Chord recognition (Park et al., ISMIR 2019, MIT, vendored in `audio2tab/btc/`). It runs on the full mix and produces per-frame maj/min/N.C. probabilities. These are averaged per half bar and passed to the existing key-aware Viterbi in place of the chroma-template scores. Beat/bar alignment, power-chord labels (used only when the model can't tell major from minor), bass-aware slash chords, diagrams, and GP5/MusicXML output are unchanged.
+
+- `--chords model` (default) or `--chords chroma` (the v3 method). If the model fails to load for any reason, the run falls back to chroma; `summary.json` then reports `chord_method` and `chord_model_fallback`.
+- Weights (12 MB, MIT) are downloaded on first use from a pinned upstream commit to `~/.cache/audio2tab/btc_model.pt` and checked by SHA-256. You can override this with `AUDIO2TAB_CACHE` or `AUDIO2TAB_BTC_WEIGHTS`. Weights are never committed.
+- Cost: about 1 s extra per 3-min song on CPU and about 100 MB extra RAM.
+- Benchmark: `python -m tests.chord_bench 10 out/chord_bench.json` runs the full pipeline. `python -m tests.chord_bench oracle 30` scores the detector alone on true segment boundaries. Both use synthetic songs with random keys and progressions, inversions, and guitar-only vs. full-mix arrangements, scored with mir_eval.

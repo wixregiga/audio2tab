@@ -26,6 +26,7 @@ class Params:
     min_note_ms: float = 80.0
     min_amp: float = 0.3
     subdivision: int = 4  # slots per beat (4 = 16th notes)
+    chords: str = "model"  # "model" (BTC transformer, falls back to chroma on any failure) or "chroma"
     beats_per_bar: int | None = None  # None = auto-detect
     source: str = "auto"  # auto | stem | mix
     max_fret: int = 22
@@ -327,8 +328,32 @@ def run(path, out_dir, p: Params):
     for s_, e_, pt, a in final_notes:
         hist[pt % 12] += (e_ - s_) * a
     key, kconf, key_note = A.detect_key(hist, bch.mean(axis=1), SC)
-    lab = A.chord_hmm(SC, key)
-    seg_names = [A.power_or_triad(SC[:, j] / (np.linalg.norm(SC[:, j]) + 1e-9), rq) if rq else "" for j, rq in enumerate(lab)]
+    chord_method, chord_fallback = "chroma", None
+    lab_chroma = A.chord_hmm(SC, key)
+    lab = lab_chroma
+    if p.chords == "model":
+        try:
+            from . import btc
+            BP = btc.beat_probs(ymono, beats)  # 25 x nb, full mix (what BTC was trained on)
+            SP = np.zeros((25, len(seg_list)))
+            for j, (_, _, lo, hi) in enumerate(seg_list):
+                lo_, hi_ = max(0, lo), min(BP.shape[1], hi)
+                SP[:, j] = BP[:, lo_:hi_].mean(axis=1) if hi_ > lo_ else BP[:, min(max(lo_, 0), BP.shape[1] - 1)]
+            lab = A.chord_hmm(SC, key, emission=SP[:24], no_chord=SP[24] > 0.6)
+            chord_method = "model:btc"
+        except Exception as e:  # never break the app over the model
+            chord_fallback = f"{type(e).__name__}: {e}"
+            print(f"[audio2tab] chord model unavailable ({chord_fallback}); using chroma", file=sys.stderr)
+    def name_seg(j, rq):
+        if not rq:
+            return ""
+        nm = A.power_or_triad(SC[:, j] / (np.linalg.norm(SC[:, j]) + 1e-9), rq)
+        if chord_method != "chroma" and nm.endswith("5"):  # model decided the third: power chord only if it is unsure
+            pM, pm = SP[2 * rq[0], j], SP[2 * rq[0] + 1, j]
+            if abs(pM - pm) > 0.25 * (pM + pm):
+                nm = A.NOTE_NAMES[rq[0]] + rq[1]
+        return nm
+    seg_names = [name_seg(j, rq) for j, rq in enumerate(lab)]
     # bass note per segment (bass stem + chosen source, or the mix) -> inversions / slash chords
     ybass = (ysrc + A.load_mono(stems["bass"])) if (source == "stem" and "bass" in stems) else A.load_mono(wav)
     Cb, _ = A.note_evidence(ybass) if ybass is not ysrc else (Cq, None)
@@ -453,6 +478,8 @@ def run(path, out_dir, p: Params):
         "note_counts": counts, "notes_in_tab": in_tab,
         "mean_note_confidence": round(float(np.mean(amps)), 2) if amps else 0,
         "bars": n_bars, "chords_by_bar": [" / ".join(c for _, c in cl) for cl in chords],
+        "chord_method": chord_method, "chord_model_fallback": chord_fallback,
+        "chords_half_bar_chroma": [A.power_or_triad(SC[:, j] / (np.linalg.norm(SC[:, j]) + 1e-9), rq) if rq else "" for j, rq in enumerate(lab_chroma)],
         "chord_agreement_vs_chroma_ref": {"segments": len(valid), "v1_notes_one_per_bar": round(agree_v1, 3), "v2_chroma_hmm_half_bar": round(agree_v2_nobass, 3), "v3_with_bass": round(agree_v2, 3)},
         "chord_root_vs_bass_note": agree_bassroot, "bass_root_half_bar": bass_root, "chords_half_bar_v2": seg_names_nobass,
         "chords_half_bar": seg_names, "chroma_reference_half_bar": [NOTE_NAMES[r] + q for r, q in ref],

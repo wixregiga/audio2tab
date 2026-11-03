@@ -135,12 +135,14 @@ def diatonic(key):
     return {(pc, ""), ((pc + 5) % 12, ""), ((pc + 7) % 12, ""), ((pc + 2) % 12, "m"), ((pc + 4) % 12, "m"), ((pc + 9) % 12, "m")}
 
 
-def chord_hmm(seg_chroma, key=None, change_penalty=0.12, key_bonus=0.06):
-    """Viterbi over chord labels for each segment column. Returns list of (root, q) or None (silence)."""
+def chord_hmm(seg_chroma, key=None, change_penalty=0.12, key_bonus=0.06, emission=None, no_chord=None):
+    """Viterbi over chord labels for each segment column. Returns list of (root, q) or None (silence).
+    emission: optional (24, n) per-label scores in CH_NAMES order (e.g. model probabilities) replacing the
+    chroma-template cosine; no_chord: optional (n,) bool marking segments the model calls N.C."""
     n = seg_chroma.shape[1]
     norms = np.linalg.norm(seg_chroma, axis=0)
     X = seg_chroma / (norms + 1e-9)
-    E = CH_T @ X  # (K, n)
+    E = CH_T @ X if emission is None else np.asarray(emission, float)  # (K, n)
     if key:
         dia = diatonic(key)
         bonus = np.array([key_bonus if c in dia else 0.0 for c in CH_NAMES])
@@ -159,6 +161,8 @@ def chord_hmm(seg_chroma, key=None, change_penalty=0.12, key_bonus=0.06):
         k = back[k, t]; path.append(k)
     path = path[::-1]
     silent = norms < 0.05 * (np.median(norms[norms > 0]) if (norms > 0).any() else 1)
+    if no_chord is not None:
+        silent = silent | np.asarray(no_chord, bool)
     return [None if silent[i] else CH_NAMES[path[i]] for i in range(n)]
 
 

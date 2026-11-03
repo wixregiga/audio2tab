@@ -6,4 +6,4 @@ dependencies = ["basic-pitch[onnx]", "demucs>=4.1.0", "librosa>=0.11.0", "soundf
 [project.scripts]
 audio2tab = "audio2tab.cli:main"
 [tool.setuptools]
-packages = ["audio2tab"]
+packages = ["audio2tab", "audio2tab.btc"]

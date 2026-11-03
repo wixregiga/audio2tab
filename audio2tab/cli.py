@@ -23,13 +23,15 @@ def main(argv=None):
     ap.add_argument("--min-note-ms", type=float, default=80)
     ap.add_argument("--min-amp", type=float, default=0.3)
     ap.add_argument("--max-span", type=int, default=4)
+    ap.add_argument("--chords", default="model", choices=["model", "chroma"],
+                    help="chord detector: model = BTC transformer (auto-downloads 12 MB weights; falls back to chroma), chroma = template HMM")
     a = ap.parse_args(argv)
     from pathlib import Path
     out = a.out or str(Path("out") / Path(a.file).stem)
     p = Params(tuning=a.tuning, capo=a.capo, separate=not a.no_separate, model=a.model, start=a.start, end=a.end,
                title=a.title, onset_threshold=a.onset_threshold, frame_threshold=a.frame_threshold,
                min_note_ms=a.min_note_ms, min_amp=a.min_amp, subdivision=a.subdivision,
-               beats_per_bar=a.beats_per_bar, max_span=a.max_span, bpm=a.bpm, source=a.source, pickup="none" if a.no_pickup else "auto")
+               beats_per_bar=a.beats_per_bar, max_span=a.max_span, bpm=a.bpm, source=a.source, pickup="none" if a.no_pickup else "auto", chords=a.chords)
     summary, _, _ = run(a.file, out, p)
     print("Outputs:")
     for k, v in summary["outputs"].items():
