@@ -1,0 +1,24 @@
+name: Bug report
+description: Something produced a wrong tab, crashed, or did not install
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes: {label: What happened?, description: What did you expect instead?}
+    validations: {required: true}
+  - type: textarea
+    id: cmd
+    attributes: {label: Command, description: "The exact command (docker run ... / audio2tab ...)", render: shell}
+    validations: {required: true}
+  - type: textarea
+    id: summary
+    attributes: {label: summary.json, description: Paste the relevant part of out/<name>/<name>.summary.json, render: json}
+  - type: input
+    id: env
+    attributes: {label: Environment, placeholder: "Docker image sha-abc1234 / Python 3.11 on macOS 15"}
+  - type: checkboxes
+    id: audio
+    attributes:
+      label: Audio
+      options:
+        - label: I can share a short clip I have the rights to (attach or link it)
