@@ -84,8 +84,15 @@ STD_SHAPES = {"F": "133211", "B": "x24442", "F#m": "244222", "Bm": "x24432", "F#
 
 
 def voicing(name, open_strings, max_fret=12):
-    """Best playable voicing: list per string low->high of fret or None (muted)."""
+    """Best playable voicing: list per string low->high of fret or None (muted).
+    Slash chords ('C#/F') get a voicing whose lowest sounding note is the bass note."""
+    bass = None
+    if "/" in name:
+        name, bn = name.split("/")
+        bass = NOTE_NAMES.index(bn)
     r0, q0 = parse_chord(name)
+    if bass is not None:
+        q0 = "slash"
     if q0 == "5":  # power chord: root on lowest two strings, root-fifth-octave shape
         best = None
         for i in (0, 1):
@@ -98,7 +105,7 @@ def voicing(name, open_strings, max_fret=12):
                 best = (f, v)
         if best:
             return best[1]
-    if open_strings == [40, 45, 50, 55, 59, 64] and name in STD_SHAPES:
+    if bass is None and open_strings == [40, 45, 50, 55, 59, 64] and name in STD_SHAPES:
         return [None if c == "x" else int(c) for c in STD_SHAPES[name]]
     r, q = parse_chord(name)
     pcs = {(r + i) % 12 for i in CHORD_IV[q]}
@@ -116,7 +123,7 @@ def voicing(name, open_strings, max_fret=12):
             if any(combo[i] is None for i in range(first, len(combo))):
                 continue  # muted strings only at the bass side (strummable)
             notes = [open_strings[i] + f for i, f in played]
-            if notes[0] % 12 != r:
+            if notes[0] % 12 != (r if bass is None else bass):
                 continue
             if {n % 12 for n in notes} != pcs:
                 continue

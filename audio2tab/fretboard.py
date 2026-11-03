@@ -61,6 +61,10 @@ def candidates(pitches, open_strings, max_fret=22, max_span=4, limit=60):
         span = (max(fretted) - min(fretted)) if fretted else 0
         if span > max_span:
             continue
+        # wide stretch across the neck (e.g. low-E fret 13 with high-e fret 16): reject
+        fs = [s for s, f in combo if f > 0]
+        if fs and max(fs) - min(fs) >= 4 and span >= 3:
+            continue
         # fingerability: at most 4 fretting fingers; a barre (lowest fret used on >=2 strings) counts as one
         if fretted:
             lo = min(fretted)

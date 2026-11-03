@@ -291,3 +291,126 @@ def downbeats(low_b, chg, note_b, first_beat, nb, bpb, allow_short=True, short_c
     srt = sorted(alt, reverse=True)
     conf = float(np.clip(0.5 + (chosen - (srt[1] if len(srt) > 1 else 0)) / 3, 0.05, 0.95))
     return downs, conf, {"constant_phase_scores": [round(a, 3) for a in alt], "chosen_mean": round(chosen, 3)}
+
+
+CQT_LO = 24  # MIDI of CQT bin 0
+
+
+def note_evidence(y):
+    """CQT magnitude (1 bin/semitone from MIDI 24) and onset-strength envelope of the source audio."""
+    import librosa
+    C = np.abs(librosa.cqt(y, sr=SR_A, hop_length=HOP, fmin=librosa.midi_to_hz(CQT_LO), n_bins=84))
+    env = librosa.onset.onset_strength(y=y, sr=SR_A, hop_length=HOP)
+    return C, env
+
+
+def verify_notes(notes, C, env, onset_min=2.5, rise_min=2.0, abs_min=0.15, silence=0.05, rel_min=0.1, oct_ratio=2.0, oct_rel=0.7,
+                 fifth_ratio=3.0, fifth_rel=0.1, fold_ratio=1.5, low_limit=40):
+    """Per-note check against the source audio. notes: (start, end, pitch, amp).
+    - phantom: pitch energy near silence (< silence x that pitch's 95th-percentile level in the song), or weak onset strength
+      at the note start AND (no energy rise in the note's own CQT bin, or low absolute energy) -> drop
+    - weak salience: the pitch bin is < rel_min of the strongest bin in that frame and does not rise -> drop
+      (frame-relative salience alone is unreliable in a full mix, where drums/bass/keys own the loudest bin)
+    - octave/harmonic: the pitch is weak relative to a strongly present pitch an octave (12, 24),
+      an octave+fifth (19; 3rd harmonic) or a fifth (7) below -> drop if that pitch is already
+      sounding, else fold the note down to it.
+    Returns (kept_notes, stats)."""
+    med = float(np.median(env)) + 1e-9
+    nf = C.shape[1]
+    gb = np.percentile(C, 95, axis=1) + 1e-9  # per-pitch loud level over the song (robust to a loud bass/drum mix)
+    out, st = [], {"dropped_phantom": 0, "dropped_weak_salience": 0, "dropped_harmonic": 0, "folded_octave": 0}
+    def fr(t):
+        return int(min(max(0, round(t * SR_A / HOP)), nf - 1))
+    def sounding(p, t):
+        return any(n[2] == p and n[0] - 0.03 <= t < n[1] for n in notes)
+    for s, e, p, a in notes:
+        f0 = fr(s); f1 = max(f0 + 1, min(nf, f0 + 6))
+        seg = C[:, f0:f1].mean(axis=1)
+        b = p - CQT_LO
+        if not 0 <= b < C.shape[0]:
+            out.append((s, e, p, a)); continue
+        sal = float(seg[b]); rel = sal / (float(seg.max()) + 1e-9)
+        on = float(env[max(0, f0 - 3):f0 + 3].max()) / med
+        pre = float(C[b, max(0, f0 - 8):max(1, f0 - 2)].mean())
+        rise = sal / (pre + 1e-9)
+        ab = sal / gb[b]
+        if ab < silence or (on < onset_min and (rise < rise_min or ab < abs_min)):
+            st["dropped_phantom"] += 1; continue
+        if rel < rel_min and rise < rise_min:
+            st["dropped_weak_salience"] += 1; continue
+        low = None
+        for d in (12, 19, 24, 7):
+            lp = p - d
+            if b - d < 0 or lp < low_limit or rel >= (fifth_rel if d == 7 else oct_rel):
+                continue  # the lower pitch must be a guitar note (not bass) and this pitch must be weak
+            need = fifth_ratio if d == 7 else (oct_ratio if sounding(lp, s) else fold_ratio)
+            if seg[b - d] >= need * sal and seg[b - d] >= 0.5 * seg.max():
+                low = lp; break
+        if low is not None:
+            if sounding(low, s):
+                st["dropped_harmonic"] += 1; continue
+            st["folded_octave"] += 1; p = low
+        out.append((s, e, p, a))
+    # folding can create duplicates at the same start
+    seen, ded = set(), []
+    for n in sorted(out):
+        k = (round(n[0], 3), n[2])
+        if k in seen:
+            st["dropped_harmonic"] += 1; continue
+        seen.add(k); ded.append(n)
+    return ded, st
+
+
+def bass_pcs(C, beats, lo_midi=28, hi_midi=52, strong=0.6, allowed=None):
+    """Per beat: pitch class of the lowest strong CQT bin in [lo_midi, hi_midi), plus a low-band energy weight.
+    C: CQT from note_evidence (bin 0 = MIDI CQT_LO)."""
+    import librosa
+    fb = np.clip(librosa.time_to_frames(beats, sr=SR_A, hop_length=HOP), 0, C.shape[1])
+    L = C[lo_midi - CQT_LO:hi_midi - CQT_LO]
+    out = np.zeros((12, len(beats) - 1))
+    for i in range(len(beats) - 1):
+        a, b = fb[i], max(fb[i] + 1, fb[i + 1])
+        if a >= C.shape[1]:
+            continue
+        v = L[:, a:b].mean(axis=1)
+        if allowed is not None:  # semitone leakage (slides, vibrato): only scale tones can be the bass
+            v = v * np.array([1.0 if (lo_midi + k) % 12 in allowed else 0.0 for k in range(len(v))])
+        if v.max() <= 0:
+            continue
+        k = int(np.argmax(v >= strong * v.max()))
+        out[(lo_midi + k) % 12, i] += v.max()
+    return out
+
+
+def apply_bass(label, seg_chroma, bass_vec, key=None, alt_ratio=0.85, min_share=0.5):
+    """Use the segment's bass note to (a) relabel when the bass is not a chord tone but a triad rooted on
+    the bass fits the chroma nearly as well (e.g. C# -> A#m), or (b) write an inversion as a slash chord (C#/F).
+    bass_vec: 12-vector of bass weight over the segment. Power chords are never slashed."""
+    if not label or bass_vec.sum() <= 0:
+        return label
+    bp = int(np.argmax(bass_vec))
+    if bass_vec[bp] < min_share * bass_vec.sum():
+        return label  # no dominant bass note in this segment
+    r = root_of(label)
+    if bp == r:
+        return label
+    x = seg_chroma / (np.linalg.norm(seg_chroma) + 1e-9)
+    sc = dict(zip(CH_NAMES, CH_T @ x))
+    q = "m" if label[len(NOTE_NAMES[r]):].startswith("m") else ""
+    cur = sc.get((r, q), max(sc.get((r, ""), 0), sc.get((r, "m"), 0)))
+    tones = {r, (r + 7) % 12} if label.endswith("5") else {r, (r + (3 if q == "m" else 4)) % 12, (r + 7) % 12}
+    dia = diatonic(key) if key else None
+    alts = [(sc[(bp, qq)], qq) for qq in ("", "m") if (bp, qq) in sc and (dia is None or (bp, qq) in dia)]
+    if alts:
+        s_alt, qq = max(alts)
+        if s_alt >= alt_ratio * cur and (bp not in tones or s_alt >= cur):
+            return power_or_triad(x, (bp, qq))
+    if bp in tones and not label.endswith("5"):
+        return f"{label}/{NOTE_NAMES[bp]}"
+    return label
+
+
+def scale_pcs(key):
+    name, mode = key.split()
+    r = NOTE_NAMES.index(name)
+    return {(r + i) % 12 for i in ((0, 2, 4, 5, 7, 9, 11) if mode == "major" else (0, 2, 3, 5, 7, 8, 10))}

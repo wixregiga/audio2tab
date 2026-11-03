@@ -63,3 +63,12 @@ Extras: `.gp5` (Guitar Pro 5, TuxGuitar), `.musicxml` (TAB staff with string/fre
 - Chord names are one per bar (two chords in a bar shows the dominant one). Only maj/min/7/power templates are used.
 - Tuning detection only notices tunings lower than standard when low notes are actually played. A capo can't be detected.
 - Separation quality depends on the mix. On synthetic test mixes it did worse than no separation (see metrics). On real recordings Demucs is generally the better choice.
+
+## Note verification (v3)
+After basic-pitch and cleanup, each note is checked against the chosen source audio (CQT, 1 bin/semitone, plus onset strength):
+- **Phantom notes** are dropped when the pitch's energy is near silence for that pitch (< 5% of its 95th-percentile level), or when there is a weak onset (< 2.5x the median onset strength) together with no energy rise in the note's own bin or low absolute energy.
+- **Octave/harmonic errors**: a note that is weak in its frame (< 70% of the loudest bin) while the pitch an octave, octave+fifth or two octaves below is much stronger is dropped if that lower note is already transcribed (lower >= 2x), or folded down to it otherwise (>= 1.5x). The lower pitch must be in guitar range (>= E2), so bass notes never trigger a fold.
+- **Unplayable stretches** (fretted notes 4+ strings apart with a 3+ fret span, e.g. E13 + e16) are rejected by the fretboard search.
+- Trailing bars after the last note are trimmed, and a final bar shorter than the meter is written with its real length.
+- **Slash chords**: the lowest strong bass note per half bar (bass stem + guitar, restricted to scale tones to absorb semitone leakage) relabels a chord when the bass is a better root (C# -> A#m), or writes inversions as C#/F.
+- MusicXML: music21's `score.recurse().pitches` counts each pitch once per enclosing stream (3x). Use `score.flatten().pitches`, which matches the note count.

@@ -21,7 +21,7 @@ def f1(ref, notes):
 def test_clean_accuracy(data, tmp_path):
     d, ref = data
     s, notes, txt = run(d / "clean_guitar.wav", tmp_path, Params(separate=False, title="t"))
-    assert f1(ref, notes) > 0.75
+    assert f1(ref, notes) >= 0.83  # v2 baseline 0.836
     # counts consistent: MIDI and tab come from the same final note list
     import pretty_midi
     c = s["note_counts"]
@@ -29,6 +29,9 @@ def test_clean_accuracy(data, tmp_path):
     from tests.eval_e2e import chord_acc
     assert chord_acc(s, "chord_segments_v2") >= 0.8
     assert "16 columns per full 4/4 bar" in txt
+    # no trailing empty bars; last bar holds notes
+    ob = s["onsets_per_bar"]
+    assert ob[list(ob)[-1]]["tab_onsets"] > 0
     assert abs(s["tempo_bpm"] - 100) < 3
     assert s["time_signature"] == "4/4"
     assert s["tuning_detected"].startswith("Standard")

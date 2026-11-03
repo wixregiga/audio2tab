@@ -180,6 +180,9 @@ def run(path, out_dir, p: Params):
     onsets, _ = A.audio_onsets(ysrc)
     sixteenth = 60.0 / tempo / 4
     notes, cstats = A.clean_notes(raw, onsets, sixteenth)
+    Cq, oenv = A.note_evidence(ysrc)
+    notes, vstats = A.verify_notes(notes, Cq, oenv)
+    cstats.update(vstats); cstats["after_cleanup"] = len(notes)
 
     # ---- tuning
     lows = sorted(n[2] for n in notes if n[2] < 40)
@@ -245,6 +248,19 @@ def run(path, out_dir, p: Params):
         starts = [starts[0] - bpb] + starts
     has_pickup = pickup_beats > 0
     lengths = [starts[i + 1] - starts[i] for i in range(len(starts) - 1)] + [bpb]
+    # trim trailing bars after the last note; the final bar only as long as the music lasts (whole beats)
+    trimmed_bars, final_bar_beats = 0, None
+    if notes:
+        last_b = float(np.interp(max(n[1] for n in notes), beats, np.arange(len(beats))))
+        last_on = float(np.interp(max(n[0] for n in notes), beats, np.arange(len(beats))))
+        keep = int(np.searchsorted(starts, last_on, side="right"))
+        trimmed_bars = len(starts) - keep
+        starts, lengths = starts[:keep], lengths[:keep]
+        need = int(np.ceil(min(last_b, len(beats) - 1) - starts[-1] - 1e-6))
+        need = max(1, min(lengths[-1], need))
+        if need < lengths[-1]:
+            final_bar_beats = need
+            lengths[-1] = need
     n_bars = len(starts)
     st_slots = np.array(starts) * sub
 
@@ -313,6 +329,12 @@ def run(path, out_dir, p: Params):
     key, kconf, key_note = A.detect_key(hist, bch.mean(axis=1), SC)
     lab = A.chord_hmm(SC, key)
     seg_names = [A.power_or_triad(SC[:, j] / (np.linalg.norm(SC[:, j]) + 1e-9), rq) if rq else "" for j, rq in enumerate(lab)]
+    # bass note per segment (bass stem + chosen source, or the mix) -> inversions / slash chords
+    ybass = (ysrc + A.load_mono(stems["bass"])) if (source == "stem" and "bass" in stems) else A.load_mono(wav)
+    Cb, _ = A.note_evidence(ybass) if ybass is not ysrc else (Cq, None)
+    BS = seg_mat(A.bass_pcs(Cb, beats, allowed=A.scale_pcs(key)))
+    seg_names_nobass = list(seg_names)
+    seg_names = [A.apply_bass(nm, SC[:, j], BS[:, j], key) for j, nm in enumerate(seg_names)]
     chords = [[] for _ in range(n_bars)]
     for j, (b, slot, _, _) in enumerate(seg_list):
         nm = seg_names[j]
@@ -341,6 +363,11 @@ def run(path, out_dir, p: Params):
         v1.append(chord_name(w) if (w > 0).sum() >= 2 else "")
     valid = [j for j in range(len(seg_list)) if SC[:, j].sum() > 0]
     agree_v2 = sum(A.chord_match(seg_names[j], ref[j]) for j in valid) / max(1, len(valid))
+    agree_v2_nobass = sum(A.chord_match(seg_names_nobass[j], ref[j]) for j in valid) / max(1, len(valid))
+    bass_root = [NOTE_NAMES[int(np.argmax(BS[:, j]))] if BS[:, j].sum() > 0 else "" for j in range(len(seg_list))]
+    agree_bassroot = {k: round(sum(A.root_of(names[j]) is not None and NOTE_NAMES[A.root_of(names[j])] == bass_root[j] or
+                                    ("/" in names[j] and names[j].split("/")[1] == bass_root[j]) for j in valid) / max(1, len(valid)), 3)
+                      for k, names in (("v2", seg_names_nobass), ("v3", seg_names))}
     agree_v1 = sum(A.chord_match(v1[seg_list[j][0]], ref[j]) for j in valid) / max(1, len(valid))
     timings["chords_key"] = time.time() - t
 
@@ -372,6 +399,7 @@ def run(path, out_dir, p: Params):
             "Tempo": f"{tempo:.0f} BPM",
             "Time signature": f"{ts_label} (confidence {ts_conf:.0%})" + (f"; starts with a {pickup_beats}-beat pickup (bar 0)" if has_pickup else "")
                               + (f"; {n_short} short {bpb // 2}-beat bar(s) inserted where the downbeat shifts" if n_short else "")
+                              + (f"; final bar is {final_bar_beats}/4 (song ends mid-bar)" if final_bar_beats else "")
                               + f"; downbeat confidence {ds_conf:.0%}"}
     header = ["=" * 78] + [f"{k + ':':16s}{v}" for k, v in info.items()] + ["=" * 78, ""]
     header += ["CHORDS (fret per string, low E -> high e; x = muted, 0 = open)"]
@@ -409,6 +437,7 @@ def run(path, out_dir, p: Params):
     in_tab = sum(len(x[2]) for x in ev_list)
     counts = {"transcribed_raw": cstats["raw"], "merged_retriggers": cstats["merged_retriggers"],
               "dropped_no_audio_onset": cstats["dropped_no_audio_onset"], "merged_min_ioi": cstats["merged_min_ioi"],
+              **{k: cstats[k] for k in ("dropped_phantom", "dropped_weak_salience", "dropped_harmonic", "folded_octave")},
               "after_cleanup": cstats["after_cleanup"], "merged_same_grid_slot": grid_dupes, "dropped_unplayable_or_out_of_range": dropped_unplayable,
               "in_tab": in_tab, "in_midi": len(final_notes)}
     assert counts["in_tab"] == counts["in_midi"] == counts["after_cleanup"] - grid_dupes - dropped_unplayable, counts
@@ -418,13 +447,14 @@ def run(path, out_dir, p: Params):
         "key_estimate": key, "key_fifths": fifths, "key_confidence_r": round(kconf, 2), "key_note": key_note,
         "tuning_detected": tun_label, "tuning_confidence": tun_conf, "tuning_reason": tun_reason, "tuning_ambiguity": tun_ambig,
         "tuning_offset_semitones": round(off, 3), "time_signature": ts_label, "time_signature_confidence": ts_conf,
-        "short_bars": n_short, "bar_start_beats": starts, "downbeat_confidence": round(ds_conf, 2), "downbeat_scores": ds_scores, "pickup_beats": int(pickup_beats),
+        "short_bars": n_short, "trailing_bars_trimmed": trimmed_bars, "final_bar_beats": final_bar_beats, "bar_start_beats": starts, "downbeat_confidence": round(ds_conf, 2), "downbeat_scores": ds_scores, "pickup_beats": int(pickup_beats),
         "chord_chart": {c: voicing_str(v) for c, v in chart}, "tuning": tun_names, "capo": p.capo,
         "transcription_source": source_desc, "stem_rms": rms, "mix_rms": mix_rms,
         "note_counts": counts, "notes_in_tab": in_tab,
         "mean_note_confidence": round(float(np.mean(amps)), 2) if amps else 0,
         "bars": n_bars, "chords_by_bar": [" / ".join(c for _, c in cl) for cl in chords],
-        "chord_agreement_vs_chroma_ref": {"segments": len(valid), "v1_notes_one_per_bar": round(agree_v1, 3), "v2_chroma_hmm_half_bar": round(agree_v2, 3)},
+        "chord_agreement_vs_chroma_ref": {"segments": len(valid), "v1_notes_one_per_bar": round(agree_v1, 3), "v2_chroma_hmm_half_bar": round(agree_v2_nobass, 3), "v3_with_bass": round(agree_v2, 3)},
+        "chord_root_vs_bass_note": agree_bassroot, "bass_root_half_bar": bass_root, "chords_half_bar_v2": seg_names_nobass,
         "chords_half_bar": seg_names, "chroma_reference_half_bar": [NOTE_NAMES[r] + q for r, q in ref],
         "onsets_per_bar": onset_report,
         "chord_segments_v2": [[round(bt(lo), 3), round(bt(hi), 3), seg_names[j]] for j, (_, _, lo, hi) in enumerate(seg_list)],
